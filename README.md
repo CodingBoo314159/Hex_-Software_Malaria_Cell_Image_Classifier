@@ -71,7 +71,7 @@ Input (128×128×3)
 
 1. Go to [kaggle.com](https://www.kaggle.com) and create a free account
 2. Click **Create → New Notebook**
-3. **File → Import Notebook** → upload `malaria_classifier_kaggle.ipynb`
+3. **File → Import Notebook** → upload `malaria_Cell_Image_Classifier.ipynb`
 4. Right panel: **Settings → Accelerator → GPU T4 x1**
 5. Click **Run All**
 
