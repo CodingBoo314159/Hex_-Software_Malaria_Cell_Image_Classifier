@@ -1,0 +1,291 @@
+# 🦟 Malaria Cell Image Classifier
+### Using the TensorFlow Malaria Dataset — Kaggle Edition
+
+This notebook builds a full **Convolutional Neural Network (CNN)** pipeline to classify blood cell images as:
+- ✅ **Uninfected** — healthy red blood cells
+- 🦠 **Parasitized** — cells infected with malaria parasites
+
+**Dataset:** Auto-downloaded via TensorFlow Datasets (~350 MB)
+
+---
+## Step 0 — Environment Check
+# Kaggle already has TF, numpy, matplotlib, seaborn pre-installed.
+# We only install the one missing piece.
+import subprocess
+subprocess.run(["pip", "install", "scikit-learn", "-q", "--no-deps"], check=True)
+
+import os, warnings, random
+warnings.filterwarnings("ignore")
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from PIL import Image
+
+import tensorflow as tf
+import tensorflow_datasets as tfds
+from tensorflow.keras import layers, models, callbacks
+from sklearn.metrics import classification_report, confusion_matrix
+# Reproducibility
+SEED = 42
+tf.random.set_seed(SEED)
+np.random.seed(SEED)
+random.seed(SEED)
+
+print(f"NumPy       : {np.__version__}")
+print(f"TensorFlow  : {tf.__version__}")
+print(f"GPU         : {tf.config.list_physical_devices('GPU')}")
+print("✅ Environment ready")
+IMG_SIZE    = (128, 128)
+BATCH_SIZE  = 32
+EPOCHS      = 15
+VAL_SPLIT   = 0.15
+TEST_SPLIT  = 0.15
+CLASS_NAMES = ["Parasitized", "Uninfected"]
+
+print("Downloading Malaria dataset ...")
+
+(ds_full,), ds_info = tfds.load(
+    "malaria",
+    split=["train"],
+    as_supervised=True,
+    with_info=True,
+    shuffle_files=True,
+)
+
+total       = ds_info.splits["train"].num_examples
+val_count   = int(total * VAL_SPLIT)
+test_count  = int(total * TEST_SPLIT)
+train_count = total - val_count - test_count
+print(f"\n📊 Dataset Summary")
+print(f"   Total  : {total:,}")
+print(f"   Train  : {train_count:,}")
+print(f"   Val    : {val_count:,}")
+print(f"   Test   : {test_count:,}")
+## Step 2 — Preprocess & Build Data Pipelines
+
+def preprocess(image, label):
+    image = tf.image.resize(image, IMG_SIZE)
+    image = tf.cast(image, tf.float32) / 255.0
+    return image, label
+
+augment = tf.keras.Sequential([
+    layers.RandomFlip("horizontal_and_vertical"),
+    layers.RandomRotation(0.1),
+    layers.RandomZoom(0.1),
+], name="augmentation")
+
+def preprocess_train(image, label):
+    image, label = preprocess(image, label)
+    image = augment(image, training=True)
+    return image, label
+# Manual train/val/test split
+ds_full  = ds_full.shuffle(total, seed=SEED, reshuffle_each_iteration=False)
+ds_test  = ds_full.take(test_count)
+ds_rest  = ds_full.skip(test_count)
+ds_val   = ds_rest.take(val_count)
+ds_train = ds_rest.skip(val_count)
+
+AUTOTUNE = tf.data.AUTOTUNE
+train_ds = (ds_train
+    .map(preprocess_train, num_parallel_calls=AUTOTUNE)
+    .cache()
+    .batch(BATCH_SIZE)
+    .prefetch(AUTOTUNE))
+
+val_ds = (ds_val
+    .map(preprocess, num_parallel_calls=AUTOTUNE)
+    .cache()
+    .batch(BATCH_SIZE)
+    .prefetch(AUTOTUNE))
+
+test_ds = (ds_test
+    .map(preprocess, num_parallel_calls=AUTOTUNE)
+    .batch(BATCH_SIZE)
+    .prefetch(AUTOTUNE))
+print("✅ Pipelines ready")
+print(f"   Train batches : {len(train_ds)}")
+print(f"   Val batches   : {len(val_ds)}")
+print(f"   Test batches  : {len(test_ds)}")
+
+## Step 3 — Visualise Sample Images
+fig, axes = plt.subplots(2, 6, figsize=(16, 6))
+fig.suptitle("Sample Malaria Cell Images", fontsize=14, fontweight="bold")
+
+for batch_images, batch_labels in train_ds.take(1):
+    parasitized = [(img, lbl) for img, lbl in zip(batch_images, batch_labels) if lbl == 0]
+    uninfected  = [(img, lbl) for img, lbl in zip(batch_images, batch_labels) if lbl == 1]
+
+    for i, (img, lbl) in enumerate(parasitized[:6]):
+        axes[0, i].imshow(img.numpy())
+        axes[0, i].set_title("🦠 Parasitized", fontsize=9, color="crimson")
+        axes[0, i].axis("off")
+
+    for i, (img, lbl) in enumerate(uninfected[:6]):
+        axes[1, i].imshow(img.numpy())
+        axes[1, i].set_title("✅ Uninfected", fontsize=9, color="green")
+        axes[1, i].axis("off")
+
+plt.tight_layout()
+plt.savefig("sample_cells.png", dpi=120, bbox_inches="tight")
+plt.show()
+print("Saved → sample_cells.png")
+## Step 4 — Build the CNN Model
+
+
+
+def build_model(input_shape=(128, 128, 3)):
+    model = models.Sequential([
+        layers.Input(shape=input_shape),
+
+        # Block 1
+        layers.Conv2D(32, (3,3), activation="relu", padding="same"),
+        layers.BatchNormalization(),
+        layers.Conv2D(32, (3,3), activation="relu", padding="same"),
+        layers.MaxPooling2D(2, 2),
+        layers.Dropout(0.25),
+
+        # Block 2
+        layers.Conv2D(64, (3,3), activation="relu", padding="same"),
+        layers.BatchNormalization(),
+        layers.Conv2D(64, (3,3), activation="relu", padding="same"),
+        layers.MaxPooling2D(2, 2),
+        layers.Dropout(0.25),
+        # Block 3
+        layers.Conv2D(128, (3,3), activation="relu", padding="same"),
+        layers.BatchNormalization(),
+        layers.Conv2D(128, (3,3), activation="relu", padding="same"),
+        layers.MaxPooling2D(2, 2),
+        layers.Dropout(0.25),
+
+        # Classifier head
+        layers.Flatten(),
+        layers.Dense(256, activation="relu"),
+        layers.BatchNormalization(),
+        layers.Dropout(0.5),
+        layers.Dense(1, activation="sigmoid"),
+    ], name="MalariaCNN")
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
+        loss="binary_crossentropy",
+        metrics=[
+            "accuracy",
+            tf.keras.metrics.AUC(name="auc"),
+            tf.keras.metrics.Precision(name="precision"),
+            tf.keras.metrics.Recall(name="recall"),
+        ],
+    )
+    return model
+
+model = build_model()
+model.summary()
+
+## Step 5 — Train the Model
+cb_early_stop = callbacks.EarlyStopping(
+    monitor="val_loss", patience=4, restore_best_weights=True, verbose=1
+)
+cb_reduce_lr = callbacks.ReduceLROnPlateau(
+    monitor="val_loss", factor=0.5, patience=2, min_lr=1e-6, verbose=1
+)
+cb_checkpoint = callbacks.ModelCheckpoint(
+    "best_malaria_model.keras",
+    monitor="val_accuracy", save_best_only=True, verbose=1
+)
+
+print(f"Training for up to {EPOCHS} epochs (GPU-accelerated on Kaggle) ...")
+
+history = model.fit(
+    train_ds,
+    validation_data=val_ds,
+    epochs=EPOCHS,
+    callbacks=[cb_early_stop, cb_reduce_lr, cb_checkpoint],
+    verbose=1,
+)
+## Step 6 — Training Curves
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+fig.suptitle("Training History", fontsize=13, fontweight="bold")
+
+axes[0].plot(history.history["accuracy"],     label="Train", linewidth=2)
+axes[0].plot(history.history["val_accuracy"], label="Val",   linewidth=2, linestyle="--")
+axes[0].set_title("Accuracy"); axes[0].set_xlabel("Epoch")
+axes[0].legend(); axes[0].grid(alpha=0.3)
+
+axes[1].plot(history.history["loss"],     label="Train", linewidth=2)
+axes[1].plot(history.history["val_loss"], label="Val",   linewidth=2, linestyle="--")
+axes[1].set_title("Loss"); axes[1].set_xlabel("Epoch")
+axes[1].legend(); axes[1].grid(alpha=0.3)
+
+plt.tight_layout()
+plt.savefig("training_curves.png", dpi=120, bbox_inches="tight")
+plt.show()
+print("Saved → training_curves.png")
+## Step 7 — Evaluate on Test Set
+print("Evaluating on held-out test set ...\n")
+test_results = model.evaluate(test_ds, verbose=0)
+metrics = dict(zip(model.metrics_names, test_results))
+
+print(f"  Test Accuracy  : {metrics['accuracy']:.4f}  ({metrics['accuracy']*100:.2f}%)")
+print(f"  Test AUC       : {metrics['auc']:.4f}")
+print(f"  Test Precision : {metrics['precision']:.4f}")
+print(f"  Test Recall    : {metrics['recall']:.4f}")
+## Step 8 — Confusion Matrix & Classification Report
+y_true, y_pred_prob = [], []
+for images, labels in test_ds:
+    probs = model.predict(images, verbose=0).flatten()
+    y_pred_prob.extend(probs)
+    y_true.extend(labels.numpy())
+
+y_true      = np.array(y_true)
+y_pred_prob = np.array(y_pred_prob)
+y_pred      = (y_pred_prob >= 0.5).astype(int)
+
+cm = confusion_matrix(y_true, y_pred)
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
+            xticklabels=CLASS_NAMES, yticklabels=CLASS_NAMES, ax=axes[0])
+axes[0].set_title("Confusion Matrix", fontweight="bold")
+axes[0].set_ylabel("True Label")
+axes[0].set_xlabel("Predicted Label")
+axes[1].hist(y_pred_prob[y_true == 0], bins=40, alpha=0.6, label="Parasitized", color="crimson")
+axes[1].hist(y_pred_prob[y_true == 1], bins=40, alpha=0.6, label="Uninfected",  color="steelblue")
+axes[1].axvline(0.5, color="black", linestyle="--", label="Threshold (0.5)")
+axes[1].set_title("Prediction Confidence Distribution", fontweight="bold")
+axes[1].set_xlabel("Predicted Probability (Uninfected)")
+axes[1].set_ylabel("Count")
+axes[1].legend()
+
+plt.tight_layout()
+plt.savefig("confusion_matrix.png", dpi=120, bbox_inches="tight")
+plt.show()
+
+print("\nClassification Report:")
+print(classification_report(y_true, y_pred, target_names=CLASS_NAMES))
+## Step 9 — Predict on a Single Image
+def predict_image(image_tensor, true_label=None):
+    img_batch = tf.expand_dims(image_tensor, 0)
+    prob = model.predict(img_batch, verbose=0)[0][0]
+    pred_class = CLASS_NAMES[int(prob >= 0.5)]
+    confidence = prob if prob >= 0.5 else 1 - prob
+
+    fig, ax = plt.subplots(figsize=(4, 4))
+    ax.imshow(image_tensor.numpy())
+    color = "green" if pred_class == "Uninfected" else "crimson"
+    title = f"Predicted: {pred_class}\nConfidence: {confidence*100:.1f}%"
+    if true_label is not None:
+        true_name = CLASS_NAMES[int(true_label)]
+        correct   = "✅" if pred_class == true_name else "❌"
+        title    += f"\nActual: {true_name} {correct}"
+    ax.set_title(title, color=color, fontweight="bold")
+    ax.axis("off")
+    plt.tight_layout()
+    plt.show()
+    return pred_class, confidence
+# Pick a random image from the test set
+for images, labels in test_ds.unbatch().take(1):
+    sample_image, sample_label = images, labels
+
+pred, conf = predict_image(sample_image, true_label=sample_label)
+print(f"Prediction : {pred}")
+print(f"Confidence : {conf*100:.1f}%")
