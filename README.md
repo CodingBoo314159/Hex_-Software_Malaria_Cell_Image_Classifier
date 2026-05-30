@@ -1,4 +1,4 @@
-@@ -0,0 +1,150 @@
+
 # 🦟 Malaria Cell Image Classifier
 
 > A Convolutional Neural Network (CNN) trained to detect malaria parasites in blood cell microscopy images — built entirely for free, no API required.
